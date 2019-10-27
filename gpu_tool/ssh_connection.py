@@ -1,21 +1,35 @@
 #!/usr/bin/env python
 # encoding: utf-8
-'''
-@author: yeqing
-@contact: 474387803@qq.com
-@software: pycharm
-@file: ssh_connection.py.py
-@time: 2019/10/19 15:02
-@desc:
-'''
-
 import math
+import multiprocessing as mp
+import os
 import random
+import time
+from datetime import datetime
+from functools import wraps
 
 import paramiko
 
 
-class GPU:
+def timethis(func):
+    """
+    时间装饰器，计算函数执行所消耗的时间
+    :param func:
+    :return:
+    """
+
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        start = datetime.now()
+        result = func(*args, **kwargs)
+        end = datetime.now()
+        print(func.__name__, end - start)
+        return result
+
+    return wrapper
+
+
+class GPU(object):
     def __init__(self, ID, uuid, load, memoryTotal, memoryUsed, memoryFree, driver, gpu_name, serial, display_mode,
                  display_active, temp_gpu):
         self.id = ID
@@ -33,20 +47,71 @@ class GPU:
         self.temperature = temp_gpu
 
 
-class SSHConnection(object):
+class SSHManager(object):
+    def __init__(self, host, port, usr, passwd):
+        self._host = host
+        self._usr = usr
+        self._password = passwd
+        self._port = port
+        self._ssh = None
+        self._sftp = None
+        self._sftp_connect()
+        self._ssh_connect()
 
-    def __init__(self, host_dict):
-        self.host = host_dict['host']
-        self.port = host_dict['port']
-        self.username = host_dict['username']
-        self.pwd = host_dict['pwd']
-        self.__k = None
-        self.__transport = None
+    def __del__(self):
+        if self._ssh:
+            self._ssh.close()
+        if self._sftp:
+            self._sftp.close()
 
-    def connect(self):
-        transport = paramiko.Transport((self.host, self.port))
-        transport.connect(username=self.username, password=self.pwd)
-        self.__transport = transport
+    def _sftp_connect(self):
+        try:
+            transport = paramiko.Transport((self._host, self._port))
+            transport.connect(username=self._usr, password=self._password)
+            self._sftp = paramiko.SFTPClient.from_transport(transport)
+        except Exception as e:
+            raise RuntimeError("sftp connect failed [%s]" % str(e))
+
+    def _ssh_connect(self):
+        try:
+            # 创建ssh对象
+            self._ssh = paramiko.SSHClient()
+            # 允许连接不在know_hosts文件中的主机
+            self._ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            # 连接服务器
+            self._ssh.connect(hostname=self._host,
+                              port=self._port,
+                              username=self._usr,
+                              password=self._password,
+                              timeout=5)
+        except Exception:
+            raise RuntimeError("ssh connected to [host:%s, usr:%s, passwd:%s] failed" %
+                               (self._host, self._usr, self._password))
+
+    def ssh_exec_cmd(self, cmd, path='~'):
+        """
+        通过ssh连接到远程服务器，执行给定的命令
+        :param cmd: 执行的命令
+        :param path: 命令执行的目录
+        :return: 返回结果
+        """
+        cmd = 'cd ' + path + ';' + cmd
+        try:
+            result = self._exec_command(cmd)
+            print(result)
+        except Exception:
+            raise RuntimeError('exec cmd [%s] failed' % cmd)
+
+    def ssh_exec_cmd_shell(self, cmd):
+        ssh = self._ssh.get_transport().open_session()
+        ssh.get_pty()
+        ssh.invoke_shell()
+        # 执行指令
+        ssh.sendall(cmd + "\n")
+        time.sleep(0.5)
+        result = ssh.recv(102400)
+        result = result.decode(encoding='UTF-8', errors='strict')
+        print(result)
 
     def __to_str(self, bytes_or_str):
         """
@@ -60,87 +125,117 @@ class SSHConnection(object):
             value = bytes_or_str
         return value
 
-    def close(self):
-        self.__transport.close()
-
-    def run_cmd(self, command):
+    def ssh_exec_shell(self, local_file, remote_file, exec_path):
         """
-         执行shell命令,返回字典
-         return {'color': 'red','res':error}或
-         return {'color': 'green', 'res':res}
-        :param command:
+        执行远程的sh脚本文件
+        :param local_file: 本地shell文件
+        :param remote_file: 远程shell文件
+        :param exec_path: 执行目录
         :return:
         """
-        ssh = paramiko.SSHClient()
-        ssh._transport = self.__transport
-        # 执行命令
-        stdin, stdout, stderr = ssh.exec_command(command)
-        # 获取命令结果
-        res = self.__to_str(stdout.read())
-        # 获取错误信息
-        error = self.__to_str(stderr.read())
-        # 如果有错误信息，返回error
-        # 否则返回res
-        if error.strip():
-            return {'color': 'red', 'res': error}
-        else:
-            return {'color': 'green', 'res': res}
-
-    def safeFloatCast(self, strNumber):
         try:
-            number = float(strNumber)
-        except ValueError:
-            number = float('nan')
-        return number
+            if not self.is_file_exist(local_file):
+                raise RuntimeError('File [%s] not exist' % local_file)
+            if not self.is_shell_file(local_file):
+                raise RuntimeError('File [%s] is not a shell file' % local_file)
+
+            self._check_remote_file(local_file, remote_file)
+
+            result = self._exec_command('chmod +x ' + remote_file + '; cd' + exec_path + ';/bin/bash ' + remote_file)
+            print('exec shell result: ', result)
+        except Exception as e:
+            raise RuntimeError('ssh exec shell failed [%s]' % str(e))
+
+    @staticmethod
+    def is_shell_file(file_name):
+        return file_name.endswith('.sh')
+
+    @staticmethod
+    def is_file_exist(file_name):
+        try:
+            with open(file_name, 'r'):
+                return True
+        except Exception as e:
+            return False
+
+    def _check_remote_file(self, local_file, remote_file):
+        """
+        检测远程的脚本文件和当前的脚本文件是否一致，如果不一致，则上传本地脚本文件
+        :param local_file:
+        :param remote_file:
+        :return:
+        """
+        try:
+            result = self._exec_command('find' + remote_file)
+            if len(result) == 0:
+                self.upload_file(local_file, remote_file)
+            else:
+                lf_size = os.path.getsize(local_file)
+                result = self._exec_command('du -b' + remote_file)
+                rf_size = int(result.split('\t')[0])
+                if lf_size != rf_size:
+                    self.upload_file(local_file, remote_file)
+        except Exception as e:
+            raise RuntimeError("check error [%s]" % str(e))
+
+    @timethis
+    def upload_file(self, local_file, remote_file):
+        """
+        通过sftp上传本地文件到远程
+        :param local_file:
+        :param remote_file:
+        :return:
+        """
+        try:
+            self._sftp.put(local_file, remote_file)
+        except Exception as e:
+            raise RuntimeError('upload failed [%s]' % str(e))
+
+    def download_file(self, target_path, local_path):
+        try:
+            # 连接，下载
+            while True:
+                result = self._exec_command("find " + target_path)
+                if len(result) != 0:
+                    break
+            self._sftp.get(target_path, local_path)
+        except Exception as e:
+            raise RuntimeError('down failed [%s]' % str(e))
+
+    def _exec_command(self, cmd):
+        """
+        通过ssh执行远程命令
+        :param cmd:
+        :return:
+        """
+        try:
+            stdin, stdout, stderr = self._ssh.exec_command(cmd)
+            return self.__to_str(stdout.read())
+        except Exception as e:
+            raise RuntimeError('Exec command [%s] failed' % str(cmd))
 
     def getGPUs(self):
-        '''
-        if platform.system() == "Windows":
-            # If the platform is Windows and nvidia-smi
-            # could not be found from the environment path,
-            # try to find it from system drive with default installation path
-            nvidia_smi = spawn.find_executable('nvidia-smi')
-            if nvidia_smi is None:
-                nvidia_smi = "%s\\Program Files\\NVIDIA Corporation\\NVSMI\\nvidia-smi.exe" % os.environ['systemdrive']
-        else:
-            nvidia_smi = "nvidia-smi"
-
-        # Get ID, processing and memory utilization for all GPUs
-        try:
-            p = Popen([nvidia_smi,
-                       "--query-gpu=index,uuid,utilization.gpu,memory.total,memory.used,memory.free,driver_version,name,gpu_serial,display_active,display_mode,temperature.gpu",
-                       "--format=csv,noheader,nounits"], stdout=PIPE)
-            stdout, stderror = p.communicate()
-        except:
-            return []
-        output = stdout.decode('UTF-8')
-        '''
-        cmd = "nvidia-smi " + "--query-gpu=index,uuid,utilization.gpu,memory.total,memory.used,memory.free,driver_version,name,gpu_serial,display_active,display_mode,temperature.gpu " + "--format=csv,noheader,nounits"
-        cmd_return = self.run_cmd(cmd)
-        output = cmd_return['res']
+        cmd = "nvidia-smi" + " " + "--query-gpu=index,uuid,utilization.gpu,memory.total,memory.used,memory.free,driver_version,name,gpu_serial,display_active,display_mode,temperature.gpu" + " " + "--format=csv,noheader,nounits"
+        output = self._exec_command(cmd)
         lines = output.split('\n')
-        print(lines)
         numDevices = len(lines) - 1
         GPUs = []
         for g in range(numDevices):
             line = lines[g]
-            # print(line)
             vals = line.split(', ')
-            # print(vals)
             for i in range(12):
-                # print(vals[i])
                 if (i == 0):
                     deviceIds = int(vals[i])
                 elif (i == 1):
                     uuid = vals[i]
                 elif (i == 2):
-                    gpuUtil = self.safeFloatCast(vals[i]) / 100
+                    gpuUtil = self.safe_float_cast(vals[i]) / 100
                 elif (i == 3):
-                    memTotal = self.safeFloatCast(vals[i])
+                    memTotal = self.safe_float_cast(vals[i])
                 elif (i == 4):
-                    memUsed = self.safeFloatCast(vals[i])
+                    memUsed = self.safe_float_cast(vals[i])
                 elif (i == 5):
-                    memFree = self.safeFloatCast(vals[i])
+                    memFree = self.safe_float_cast(vals[i])
                 elif (i == 6):
                     driver = vals[i]
                 elif (i == 7):
@@ -152,15 +247,15 @@ class SSHConnection(object):
                 elif (i == 10):
                     display_mode = vals[i]
                 elif (i == 11):
-                    temp_gpu = self.safeFloatCast(vals[i]);
+                    temp_gpu = self.safe_float_cast(vals[i]);
             GPUs.append(
                 GPU(deviceIds, uuid, gpuUtil, memTotal, memUsed, memFree, driver, gpu_name, serial, display_mode,
                     display_active, temp_gpu))
         return GPUs  # (deviceIds, gpuUtil, memUtil)
 
-    def getAvailable(self, order='first', limit=1, maxLoad=0.5, maxMemory=0.5, memoryFree=0, includeNan=False,
-                     excludeID=[],
-                     excludeUUID=[]):
+    def get_available_ids(self, order='memory', limit=1, maxLoad=0.5, maxMemory=0.5, memoryFree=0, includeNan=False,
+                          excludeID=[],
+                          excludeUUID=[]):
         # order = first | last | random | load | memory
         #    first --> select the GPU with the lowest ID (DEFAULT)
         #    last --> select the GPU with the highest ID
@@ -174,8 +269,8 @@ class SSHConnection(object):
         GPUs = self.getGPUs()
 
         # Determine, which GPUs are available
-        GPUavailability = self.getAvailability(GPUs, maxLoad=maxLoad, maxMemory=maxMemory, memoryFree=memoryFree,
-                                               includeNan=includeNan, excludeID=excludeID, excludeUUID=excludeUUID)
+        GPUavailability = self._judge_available(GPUs, maxLoad=maxLoad, maxMemory=maxMemory, memoryFree=memoryFree,
+                                                includeNan=includeNan, excludeID=excludeID, excludeUUID=excludeUUID)
         availAbleGPUindex = [idx for idx in range(0, len(GPUavailability)) if (GPUavailability[idx] == 1)]
         # Discard unavailable GPUs
         GPUs = [GPUs[g] for g in availAbleGPUindex]
@@ -200,8 +295,8 @@ class SSHConnection(object):
 
         return deviceIds
 
-    def getAvailability(self, GPUs, maxLoad=0.5, maxMemory=0.5, memoryFree=0, includeNan=False, excludeID=[],
-                        excludeUUID=[]):
+    def _judge_available(self, GPUs, maxLoad=0.5, maxMemory=0.5, memoryFree=0, includeNan=False, excludeID=[],
+                         excludeUUID=[]):
         # Determine, which GPUs are available
         GPUavailability = [
             1 if (gpu.memoryFree >= memoryFree) and (gpu.load < maxLoad or (includeNan and math.isnan(gpu.load))) and (
@@ -209,36 +304,40 @@ class SSHConnection(object):
                          (gpu.id not in excludeID) and (gpu.uuid not in excludeUUID)) else 0 for gpu in GPUs]
         return GPUavailability
 
-    def upload(self, local_path, target_path):
-        # 连接，上传
-        sftp = paramiko.SFTPClient.from_transport(self.__transport)
-        # 将location.py 上传至服务器 /tmp/test.py
-        sftp.put(local_path, target_path, confirm=True)
-        # print(os.stat(local_path).st_mode)
-        # 增加权限
-        # sftp.chmod(target_path, os.stat(local_path).st_mode)
-        sftp.chmod(target_path, 0o755)  # 注意这里的权限是八进制的，八进制需要使用0o作为前缀
+    def safe_float_cast(self, str):
+        try:
+            number = float(str)
+        except ValueError:
+            number = float('nan')
+        return number
 
-    def download(self, target_path, local_path):
-        # 连接，下载
-        sftp = paramiko.SFTPClient.from_transport(self.__transport)
-        sftp.get(target_path, local_path)
 
-    # 销毁
-    def __del__(self):
-        self.close()
+class ComputingNode(object):
+    def __init__(self, ip, port, user, pwd):
+        self.host = ip
+        self.port = port
+        self.user = user
+        self.pwd = pwd
+
+    def get_port(self):
+        return self.port
 
 
 if __name__ == '__main__':
-    host = {}
-    host['host'] = "202.115.103.60"
-    host['port'] = 22
-    host['username'] = "*"
-    host['pwd'] = "qweasd234"
-    ssh_conn = SSHConnection(host)
-    ssh_conn.connect()
-    # cmd = "nvidia-smi" + "--query-gpu=index,uuid,utilization.gpu,memory.total,memory.used,memory.free,driver_version,name,gpu_serial,display_active,display_mode,temperature.gpu" + "--format=csv,noheader,nounits"
-    # cmd_str = ssh_conn.run_cmd(cmd)
-    print(ssh_conn.getGPUs())
-    print(ssh_conn.getAvailable(limit=3))
-# print(return_str.split('\n'))
+    mp.set_start_method('spawn')
+    ssh_push_set = mp.Queue()  # 存放可用的SSH连接
+    ssh_pull_set = mp.Queue()  # 存放正在使用的连接
+    computing_nodes = []  # 存放所有计算节点的信息
+    node1 = ComputingNode("202.115.103.60", 10022, "yeqing", "qweasd234")
+    computing_nodes.append(node1)
+    node2 = ComputingNode("202.115.103.60", 10022, "yeqing", "qweasd234")
+    computing_nodes.append(node2)
+    for node in computing_nodes:
+        ssh = SSHManager(node.host, node.port, node.user, node.pwd)
+        gpu_ids = ssh.get_available_ids()
+        if len(gpu_ids) > 0:
+            ssh_push_set.put(computing_nodes)
+            print(ssh.get_available_ids())
+            ssh.upload_file("./gpu_til_test.py", "gpu_til_test.py")
+            ssh.ssh_exec_cmd_shell("nohup python gpu_til_test.py &")
+            ssh.download_file("gpu_log", "log.txt")
