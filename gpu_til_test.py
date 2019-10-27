@@ -8,6 +8,7 @@
 @time: 2019/10/20 22:52
 @desc:
 '''
+
 import time
 from threading import Thread
 
@@ -32,7 +33,12 @@ class Monitor(Thread):
 
 # Instantiate monitor with a 10-second delay between updates
 monitor = Monitor(10)
-
+time.sleep(5)
+fp = open("gpu_log", "w")
+fp.write("over")
+fp.write('\n')
+fp.flush()
+fp.closed
 # Train, etc.
 
 # Close monitor
