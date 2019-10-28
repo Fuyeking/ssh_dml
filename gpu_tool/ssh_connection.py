@@ -111,7 +111,7 @@ class SSHManager(object):
         time.sleep(0.5)
         result = ssh.recv(102400)
         result = result.decode(encoding='UTF-8', errors='strict')
-        print(result)
+        return result
 
     def __to_str(self, bytes_or_str):
         """
@@ -275,6 +275,6 @@ if __name__ == '__main__':
         gpu_ids = ssh.get_available_ids()
         if len(gpu_ids) > 0:
             print(ssh.get_available_ids())
-            ssh.upload_file("../gpu_til_test.py", "gpu_til_test.py")
+            ssh.upload_file("./gpu_til_test.py", "gpu_til_test.py")
             ssh.ssh_exec_cmd_shell("nohup python gpu_til_test.py &")
             ssh.download_file("gpu_log", node.host + "log.txt")
