@@ -125,59 +125,6 @@ class SSHManager(object):
             value = bytes_or_str
         return value
 
-    def ssh_exec_shell(self, local_file, remote_file, exec_path):
-        """
-        执行远程的sh脚本文件
-        :param local_file: 本地shell文件
-        :param remote_file: 远程shell文件
-        :param exec_path: 执行目录
-        :return:
-        """
-        try:
-            if not self.is_file_exist(local_file):
-                raise RuntimeError('File [%s] not exist' % local_file)
-            if not self.is_shell_file(local_file):
-                raise RuntimeError('File [%s] is not a shell file' % local_file)
-
-            self._check_remote_file(local_file, remote_file)
-
-            result = self._exec_command('chmod +x ' + remote_file + '; cd' + exec_path + ';/bin/bash ' + remote_file)
-            print('exec shell result: ', result)
-        except Exception as e:
-            raise RuntimeError('ssh exec shell failed [%s]' % str(e))
-
-    @staticmethod
-    def is_shell_file(file_name):
-        return file_name.endswith('.sh')
-
-    @staticmethod
-    def is_file_exist(file_name):
-        try:
-            with open(file_name, 'r'):
-                return True
-        except Exception as e:
-            return False
-
-    def _check_remote_file(self, local_file, remote_file):
-        """
-        检测远程的脚本文件和当前的脚本文件是否一致，如果不一致，则上传本地脚本文件
-        :param local_file:
-        :param remote_file:
-        :return:
-        """
-        try:
-            result = self._exec_command('find' + remote_file)
-            if len(result) == 0:
-                self.upload_file(local_file, remote_file)
-            else:
-                lf_size = os.path.getsize(local_file)
-                result = self._exec_command('du -b' + remote_file)
-                rf_size = int(result.split('\t')[0])
-                if lf_size != rf_size:
-                    self.upload_file(local_file, remote_file)
-        except Exception as e:
-            raise RuntimeError("check error [%s]" % str(e))
-
     @timethis
     def upload_file(self, local_file, remote_file):
         """
@@ -192,6 +139,7 @@ class SSHManager(object):
             raise RuntimeError('upload failed [%s]' % str(e))
 
     def download_file(self, target_path, local_path):
+
         try:
             # 连接，下载
             while True:
@@ -214,6 +162,7 @@ class SSHManager(object):
         except Exception as e:
             raise RuntimeError('Exec command [%s] failed' % str(cmd))
 
+    # 获取计算机节点的GPU信息
     def getGPUs(self):
         cmd = "nvidia-smi" + " " + "--query-gpu=index,uuid,utilization.gpu,memory.total,memory.used,memory.free,driver_version,name,gpu_serial,display_active,display_mode,temperature.gpu" + " " + "--format=csv,noheader,nounits"
         output = self._exec_command(cmd)
@@ -229,13 +178,13 @@ class SSHManager(object):
                 elif (i == 1):
                     uuid = vals[i]
                 elif (i == 2):
-                    gpuUtil = self.safe_float_cast(vals[i]) / 100
+                    gpuUtil = self._safe_float_cast(vals[i]) / 100
                 elif (i == 3):
-                    memTotal = self.safe_float_cast(vals[i])
+                    memTotal = self._safe_float_cast(vals[i])
                 elif (i == 4):
-                    memUsed = self.safe_float_cast(vals[i])
+                    memUsed = self._safe_float_cast(vals[i])
                 elif (i == 5):
-                    memFree = self.safe_float_cast(vals[i])
+                    memFree = self._safe_float_cast(vals[i])
                 elif (i == 6):
                     driver = vals[i]
                 elif (i == 7):
@@ -247,12 +196,13 @@ class SSHManager(object):
                 elif (i == 10):
                     display_mode = vals[i]
                 elif (i == 11):
-                    temp_gpu = self.safe_float_cast(vals[i]);
+                    temp_gpu = self._safe_float_cast(vals[i]);
             GPUs.append(
                 GPU(deviceIds, uuid, gpuUtil, memTotal, memUsed, memFree, driver, gpu_name, serial, display_mode,
                     display_active, temp_gpu))
         return GPUs  # (deviceIds, gpuUtil, memUtil)
 
+    # 根据选项获取GPU资源
     def get_available_ids(self, order='memory', limit=1, maxLoad=0.5, maxMemory=0.5, memoryFree=0, includeNan=False,
                           excludeID=[],
                           excludeUUID=[]):
@@ -264,17 +214,14 @@ class SSHManager(object):
         #    memory --> select the GPU with the most memory available
         # limit = 1 (DEFAULT), 2, ..., Inf
         #     Limit sets the upper limit for the number of GPUs to return. E.g. if limit = 2, but only one is available, only one is returned.
-
         # Get device IDs, load and memory usage
         GPUs = self.getGPUs()
-
         # Determine, which GPUs are available
         GPUavailability = self._judge_available(GPUs, maxLoad=maxLoad, maxMemory=maxMemory, memoryFree=memoryFree,
                                                 includeNan=includeNan, excludeID=excludeID, excludeUUID=excludeUUID)
         availAbleGPUindex = [idx for idx in range(0, len(GPUavailability)) if (GPUavailability[idx] == 1)]
         # Discard unavailable GPUs
         GPUs = [GPUs[g] for g in availAbleGPUindex]
-
         # Sort available GPUs according to the order argument
         if (order == 'first'):
             GPUs.sort(key=lambda x: float('inf') if math.isnan(x.id) else x.id, reverse=False)
@@ -286,13 +233,10 @@ class SSHManager(object):
             GPUs.sort(key=lambda x: float('inf') if math.isnan(x.load) else x.load, reverse=False)
         elif (order == 'memory'):
             GPUs.sort(key=lambda x: float('inf') if math.isnan(x.memoryUtil) else x.memoryUtil, reverse=False)
-
         # Extract the number of desired GPUs, but limited to the total number of available GPUs
         GPUs = GPUs[0:min(limit, len(GPUs))]
-
         # Extract the device IDs from the GPUs and return them
         deviceIds = [gpu.id for gpu in GPUs]
-
         return deviceIds
 
     def _judge_available(self, GPUs, maxLoad=0.5, maxMemory=0.5, memoryFree=0, includeNan=False, excludeID=[],
@@ -304,7 +248,7 @@ class SSHManager(object):
                          (gpu.id not in excludeID) and (gpu.uuid not in excludeUUID)) else 0 for gpu in GPUs]
         return GPUavailability
 
-    def safe_float_cast(self, str):
+    def _safe_float_cast(self, str):
         try:
             number = float(str)
         except ValueError:
@@ -319,24 +263,17 @@ class ComputingNode(object):
         self.user = user
         self.pwd = pwd
 
-    def get_port(self):
-        return self.port
-
 
 if __name__ == '__main__':
-    mp.set_start_method('spawn')
-    ssh_push_set = mp.Queue()  # 存放可用的SSH连接
-    ssh_pull_set = mp.Queue()  # 存放正在使用的连接
     computing_nodes = []  # 存放所有计算节点的信息
-    node1 = ComputingNode("192.168.0.56", 22, "root", "lg123456")
-    computing_nodes.append(node1)
+    #node1 = ComputingNode("192.168.0.56", 22, "root", "lg123456")
+    #computing_nodes.append(node1)
     node2 = ComputingNode("202.115.103.60", 10022, "yeqing", "qweasd234")
     computing_nodes.append(node2)
     for node in computing_nodes:
         ssh = SSHManager(node.host, node.port, node.user, node.pwd)
         gpu_ids = ssh.get_available_ids()
         if len(gpu_ids) > 0:
-            ssh_push_set.put(computing_nodes)
             print(ssh.get_available_ids())
             ssh.upload_file("../gpu_til_test.py", "gpu_til_test.py")
             ssh.ssh_exec_cmd_shell("nohup python gpu_til_test.py &")

@@ -32,14 +32,12 @@ class Monitor(Thread):
 
 
 # Instantiate monitor with a 10-second delay between updates
-monitor = Monitor(10)
-time.sleep(5)
+monitor = Monitor(4)
 fp = open("gpu_log", "w")
-fp.write("over test aabb")
+fp.write("over test")
 fp.write('\n')
 fp.flush()
 fp.closed
 # Train, etc.
-
 # Close monitor
 monitor.stop()
