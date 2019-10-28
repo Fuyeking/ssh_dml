@@ -35,7 +35,7 @@ class Monitor(Thread):
 monitor = Monitor(10)
 time.sleep(5)
 fp = open("gpu_log", "w")
-fp.write("over")
+fp.write("over test aabb")
 fp.write('\n')
 fp.flush()
 fp.closed

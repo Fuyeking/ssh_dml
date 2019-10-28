@@ -328,7 +328,7 @@ if __name__ == '__main__':
     ssh_push_set = mp.Queue()  # 存放可用的SSH连接
     ssh_pull_set = mp.Queue()  # 存放正在使用的连接
     computing_nodes = []  # 存放所有计算节点的信息
-    node1 = ComputingNode("202.115.103.60", 10022, "yeqing", "qweasd234")
+    node1 = ComputingNode("192.168.0.56", 22, "root", "lg123456")
     computing_nodes.append(node1)
     node2 = ComputingNode("202.115.103.60", 10022, "yeqing", "qweasd234")
     computing_nodes.append(node2)
@@ -338,6 +338,6 @@ if __name__ == '__main__':
         if len(gpu_ids) > 0:
             ssh_push_set.put(computing_nodes)
             print(ssh.get_available_ids())
-            ssh.upload_file("./gpu_til_test.py", "gpu_til_test.py")
+            ssh.upload_file("../gpu_til_test.py", "gpu_til_test.py")
             ssh.ssh_exec_cmd_shell("nohup python gpu_til_test.py &")
-            ssh.download_file("gpu_log", "log.txt")
+            ssh.download_file("gpu_log", node.host + "log.txt")
