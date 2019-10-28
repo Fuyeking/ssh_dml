@@ -111,7 +111,7 @@ class SSHManager(object):
         time.sleep(0.5)
         result = ssh.recv(102400)
         result = result.decode(encoding='UTF-8', errors='strict')
-        return result
+        print(result)
 
     def __to_str(self, bytes_or_str):
         """
@@ -266,8 +266,8 @@ class ComputingNode(object):
 
 if __name__ == '__main__':
     computing_nodes = []  # 存放所有计算节点的信息
-    #node1 = ComputingNode("192.168.0.56", 22, "root", "lg123456")
-    #computing_nodes.append(node1)
+    node1 = ComputingNode("192.168.0.56", 22, "root", "lg123456")
+    computing_nodes.append(node1)
     node2 = ComputingNode("202.115.103.60", 10022, "yeqing", "qweasd234")
     computing_nodes.append(node2)
     for node in computing_nodes:
@@ -275,6 +275,7 @@ if __name__ == '__main__':
         gpu_ids = ssh.get_available_ids()
         if len(gpu_ids) > 0:
             print(ssh.get_available_ids())
-            ssh.upload_file("./gpu_til_test.py", "gpu_til_test.py")
+            ssh.upload_file("../gpu_til_test.py", "gpu_til_test.py")
+            ssh.ssh_exec_cmd("nohup python gpu_til_test.py &")
             ssh.ssh_exec_cmd_shell("nohup python gpu_til_test.py &")
             ssh.download_file("gpu_log", node.host + "log.txt")
